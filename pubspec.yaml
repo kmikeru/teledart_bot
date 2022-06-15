@@ -10,7 +10,7 @@ environment:
 dependencies:
   teledart: ^0.2.1
   meshtastic_proto:
-    path: ../meshtastic_proto
+    git: https://github.com/kmikeru/meshtastic_proto
 
 dev_dependencies:
   lints: ^1.0.0
