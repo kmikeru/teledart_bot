@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io' show Platform, exit;
+import 'package:meshtastic_proto/MeshInterface.dart';
 import 'package:meshtastic_proto/util.dart';
 import 'package:teledart/teledart.dart';
 import 'package:teledart/telegram.dart';
@@ -13,6 +15,10 @@ void main() async {
   Map<String, String> envVars = Platform.environment;
   final token = envVars['BOT_TOKEN'];
   final host = envVars['BOT_HOST'];
+  final int timerSec = int.tryParse(envVars['BOT_TIMER'] ?? '') ?? 60;
+  final int timerDelay = int.tryParse(envVars['BOT_DELAY'] ?? '') ?? 300;
+  print('Timer interval:$timerSec');
+  print('Timer delay:$timerDelay');
 
   if (token == null) {
     print('BOT_TOKEN is not set');
@@ -24,11 +30,28 @@ void main() async {
     exit(-1);
   }
   var telegram = Telegram(token);
-  var event = Event((await telegram.getMe()).username!);
 
   var iface = TCPInterface(hostname: host);
+  iface.enableDebug = true;
   iface.connect();
+  runBot(telegram, iface);
 
+  Timer.periodic(Duration(seconds: timerSec), (timer) {
+    int diff = DateTime.now().difference(iface.lastPacketReceived).inSeconds;
+    print('Timer diff: $diff');
+    if (diff > timerDelay) {
+      print('No packets recently, reconnecting');
+      iface.close();
+      Future.delayed(Duration(seconds: 1), () {
+        iface.connect();
+        print('reconnected');
+      });
+    }
+  });
+}
+
+runBot(Telegram telegram, MeshInterface iface) async {
+  var event = Event((await telegram.getMe()).username!);
   TeleDart(telegram, event)
     ..start()
     ..onMessage(entityType: 'bot_command', keyword: 'start').listen((message) {
@@ -40,11 +63,18 @@ void main() async {
       if (iface.configComplete) {
         String text = '';
         iface.nodemap.forEach((key, value) {
+          String pos = value.user.longName;
+          if (value.position.latitudeI != 0 && value.position.longitudeI != 0) {
+            String lat = (value.position.latitudeI / 1e7).toStringAsFixed(3);
+            String lon = (value.position.longitudeI / 1e7).toStringAsFixed(3);
+            pos = '<a href="https://www.openstreetmap.org/?mlat=$lat&mlon=$lon#map=12/$lat/$lon">${value.user.longName}</a>';
+          }
+
           String hops = '';
           if (iface.hoplimit[key] != null) {
             hops = ' hoplimit: ' + iface.hoplimit[key].toString();
           }
-          text += value.user.longName +
+          text += pos +
               '\t' +
               formatDate(DateTime.fromMillisecondsSinceEpoch(value.lastHeard * 1000)) +
               '\tSNR:' +
@@ -52,7 +82,7 @@ void main() async {
               hops +
               '\n';
         });
-        telegram.sendMessage(message.chat.id, text);
+        telegram.sendMessage(message.chat.id, text, parse_mode: 'HTML');
       } else {
         telegram.sendMessage(message.chat.id, 'config not complete');
       }
